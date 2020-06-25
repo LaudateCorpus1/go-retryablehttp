@@ -322,6 +322,11 @@ type CheckRetry func(ctx context.Context, resp *http.Response, err error) (bool,
 // that should pass before trying again.
 type Backoff func(min, max time.Duration, attemptNum int, resp *http.Response) time.Duration
 
+// Backoff specifies a policy for how long to wait between retries.
+// It is called after a failing request to determine the amount of time
+// that should pass before trying again.
+type BackoffWithError func(min, max time.Duration, attemptNum int, resp *http.Response, err error) time.Duration
+
 // ErrorHandler is called if retries are expired, containing the last status
 // from the http library. If not specified, default behavior for the library is
 // to close the body and return an error indicating how many tries were
@@ -350,6 +355,9 @@ type Client struct {
 	// after each request. The default policy is DefaultRetryPolicy.
 	CheckRetry CheckRetry
 
+	// Backoff specifies the policy for how long to wait between retries, takes priority over Backoff if not nil
+	BackoffWithError BackoffWithError
+
 	// Backoff specifies the policy for how long to wait between retries
 	Backoff Backoff
 
@@ -362,13 +370,14 @@ type Client struct {
 // NewClient creates a new Client with default settings.
 func NewClient() *Client {
 	return &Client{
-		HTTPClient:   cleanhttp.DefaultPooledClient(),
-		Logger:       defaultLogger,
-		RetryWaitMin: defaultRetryWaitMin,
-		RetryWaitMax: defaultRetryWaitMax,
-		RetryMax:     defaultRetryMax,
-		CheckRetry:   DefaultRetryPolicy,
-		Backoff:      DefaultBackoff,
+		HTTPClient:       cleanhttp.DefaultPooledClient(),
+		Logger:           defaultLogger,
+		RetryWaitMin:     defaultRetryWaitMin,
+		RetryWaitMax:     defaultRetryWaitMax,
+		RetryMax:         defaultRetryMax,
+		CheckRetry:       DefaultRetryPolicy,
+		BackoffWithError: nil,
+		Backoff:          DefaultBackoff,
 	}
 }
 
@@ -589,7 +598,13 @@ func (c *Client) Do(req *Request) (*http.Response, error) {
 			c.drainBody(resp.Body)
 		}
 
-		wait := c.Backoff(c.RetryWaitMin, c.RetryWaitMax, i, resp)
+		var wait time.Duration
+		if c.BackoffWithError != nil {
+			wait = c.BackoffWithError(c.RetryWaitMin, c.RetryWaitMax, i, resp, err)
+		} else {
+			wait = c.Backoff(c.RetryWaitMin, c.RetryWaitMax, i, resp)
+		}
+
 		desc := fmt.Sprintf("%s %s", req.Method, req.URL)
 		if code > 0 {
 			desc = fmt.Sprintf("%s (status: %d)", desc, code)
